@@ -169,9 +169,9 @@ def blank_plot(message='Run a simulation to populate this view'):
 def style(fig, title_text=None, height=330):
     fig.update_layout(template='plotly_white', font=dict(family='Arial',size=12,color=INK),
                       paper_bgcolor='#ffffff',plot_bgcolor='#ffffff',height=height,
-                      margin=dict(l=50,r=24,t=55 if title_text else 30,b=47),
+                      margin=dict(l=50,r=24,t=78 if title_text else 30,b=47),
                       title=dict(text=title_text or '',font=dict(size=16,color=INK)),
-                      legend=dict(orientation='h',y=1.15,x=0,font=dict(size=11)),
+                      legend=dict(orientation='h',y=1.0,yanchor='top',x=0,font=dict(size=11)),
                       hoverlabel=dict(bgcolor=INK,font=dict(color='white')), hovermode='closest')
     fig.update_xaxes(gridcolor='#f0edf5',zeroline=False)
     fig.update_yaxes(gridcolor='#f0edf5',zeroline=False)
@@ -187,19 +187,25 @@ def inventory_chart(result):
             continue
         value_col='owned_inventory_value_inr' if 'owned_inventory_value_inr' in part else 'inventory_value_inr'
         g=part.groupby('week')[value_col]
-        means=g.mean()/1e5
+        # A short moving average removes presentation noise from synchronized
+        # weekly reviews. Raw weekly paths remain in the evidence export.
+        means=(g.mean()/1e5).rolling(5,center=True,min_periods=3).mean().bfill().ffill()
         if label=='Proposed':
-            fig.add_trace(go.Scatter(x=means.index,y=g.quantile(.9)/1e5,mode='lines',line=dict(width=0),showlegend=False,hoverinfo='skip'))
-            fig.add_trace(go.Scatter(x=means.index,y=g.quantile(.1)/1e5,mode='lines',line=dict(width=0),fill='tonexty',fillcolor='rgba(8,127,131,.12)',name='Proposed P10–P90',hoverinfo='skip'))
+            p90=(g.quantile(.9)/1e5).rolling(5,center=True,min_periods=3).mean().bfill().ffill()
+            p10=(g.quantile(.1)/1e5).rolling(5,center=True,min_periods=3).mean().bfill().ffill()
+            fig.add_trace(go.Scatter(x=means.index,y=p90,mode='lines',line=dict(width=0),showlegend=False,hoverinfo='skip'))
+            fig.add_trace(go.Scatter(x=means.index,y=p10,mode='lines',line=dict(width=0),fill='tonexty',fillcolor='rgba(8,127,131,.12)',name='Proposed P10–P90',hoverinfo='skip'))
         fig.add_trace(go.Scatter(x=means.index,y=means,mode='lines',name=label,line=dict(color=color,width=3,dash='dot' if label=='Baseline' else 'solid'),hovertemplate='Week %{x}<br>₹%{y:,.2f} lakh<extra>'+label+'</extra>'))
     fig.update_xaxes(title='Simulation week')
     fig.update_yaxes(title='Owned stock + pipeline · ₹ lakh')
-    return style(fig,'Inventory under the same demand scenarios',360)
+    return style(fig,'Inventory trend · 5-week centered average',360)
 
 
 def stage_chart(result):
     c=result['classification']
     p=result['policy']
+    if c.empty or p.empty:
+        return blank_plot('Select at least one SKU')
     values=p.assign(value=p.stock_l*p.unit_cost_inr_l).groupby('stage').value.sum()/1e5
     counts=c.groupby('stage').size()
     stages=[s for s in COLORS if s in values.index]
@@ -213,6 +219,8 @@ def stage_chart(result):
 
 def confidence_chart(result):
     c=result['classification']
+    if c.empty:
+        return blank_plot('Select at least one SKU')
     stages=[s for s in COLORS if s in set(c.stage)]
     stages += [s for s in c.stage.unique() if s not in stages]
     fig=go.Figure()
@@ -227,6 +235,8 @@ def confidence_chart(result):
 
 def signal_chart(result):
     c=result['classification'].copy()
+    if c.empty:
+        return blank_plot('Select at least one SKU')
     fig=go.Figure()
     for st,g in c.groupby('stage'):
         fig.add_trace(go.Scatter(x=g.trend_pct,y=g.peak_ratio,mode='markers',name=st,
@@ -241,6 +251,8 @@ def signal_chart(result):
 
 def policy_chart(result):
     p=result['policy']
+    if p.empty:
+        return blank_plot('Select at least one SKU')
     g=p.groupby('stage')[['current_order_up_to_l','proposed_order_up_to_l','effective_order_up_to_l']].sum()
     stages=[s for s in COLORS if s in g.index]+[s for s in g.index if s not in COLORS]
     fig=go.Figure()
@@ -308,6 +320,42 @@ def chart_html(fig, chart_id):
     return f'<div id="{chart_id}" class="chart"></div><script>var s_{chart_id}={payload};Plotly.newPlot("{chart_id}",s_{chart_id}.data,s_{chart_id}.layout,{{responsive:true,displaylogo:false}});</script>'
 
 
+def sku_filter_html(data):
+    """Portable all-selected checkbox filter plus an aggregate/individual history chart."""
+    products=data['Products'][['sku','product_name']].copy()
+    names=dict(zip(products.sku.astype(str),products.product_name.astype(str)))
+    skus=products.sku.astype(str).tolist()
+    history=data['History'][['month','sku','orders_l','shipments_l','forecast_l']].copy()
+    history['month']=pd.to_datetime(history['month']).dt.strftime('%Y-%m-%d')
+    payload=json.dumps(history.to_dict(orient='records'),separators=(',',':')).replace('<','\\u003c').replace('>','\\u003e').replace('&','\\u0026')
+    boxes=''.join(
+        f'<label class="sku-option"><input type="checkbox" class="sku-check" value="{esc(sku)}" checked onchange="applySkuFilter()"><span><b>{esc(sku)}</b><small>{esc(names.get(sku,""))}</small></span></label>'
+        for sku in skus
+    )
+    return f'''<details class="sku-filter" ontoggle="if(this.open)setTimeout(()=>Plotly.Plots.resize(document.getElementById('skuHistory')),0)"><summary>SKU view filter · <span id="skuCount">{len(skus)} of {len(skus)} selected</span></summary>
+      <p class="note">All SKUs start selected. Deselect any SKU to focus the SKU-level tables and demand-history chart. Portfolio KPI cards and simulation totals remain the scenario originally run.</p>
+      <div class="sku-actions"><input id="skuSearch" type="search" placeholder="Search SKU or product" oninput="searchSkus(this.value)"><button onclick="setAllSkus(true)">Select all</button><button onclick="setAllSkus(false)">Clear</button></div>
+      <div class="sku-options">{boxes}</div><div id="skuHistory" class="chart"></div>
+    </details><script>
+      const skuHistoryRows={payload};
+      function chosenSkus(){{return new Set(Array.from(document.querySelectorAll('.sku-check:checked')).map(x=>x.value));}}
+      function setAllSkus(state){{document.querySelectorAll('.sku-check').forEach(x=>x.checked=state);applySkuFilter();}}
+      function searchSkus(q){{q=q.toLowerCase();document.querySelectorAll('.sku-option').forEach(x=>x.style.display=x.innerText.toLowerCase().includes(q)?'flex':'none');}}
+      function applySkuFilter(){{
+        const selected=chosenSkus();document.getElementById('skuCount').textContent=selected.size+' of {len(skus)} selected';
+        document.querySelectorAll('table.data-table').forEach(table=>{{
+          const heads=Array.from(table.querySelectorAll('thead th'));const skuCol=heads.findIndex(h=>h.textContent.trim().toLowerCase()==='sku');
+          if(skuCol<0)return;table.querySelectorAll('tbody tr').forEach(row=>{{const cell=row.children[skuCol];row.style.display=cell&&selected.has(cell.textContent.trim())?'':'none';}});
+        }});
+        const byMonth={{}};skuHistoryRows.forEach(r=>{{if(!selected.has(String(r.sku)))return;const m=r.month;(byMonth[m]??={{orders_l:0,shipments_l:0,forecast_l:0}});byMonth[m].orders_l+=Number(r.orders_l)||0;byMonth[m].shipments_l+=Number(r.shipments_l)||0;byMonth[m].forecast_l+=Number(r.forecast_l)||0;}});
+        const months=Object.keys(byMonth).sort();const one=selected.size===1?Array.from(selected)[0]:'Selected SKUs';
+        const traces=[['orders_l','Orders','#6d42cb','solid'],['shipments_l','Shipments','#087f83','solid'],['forecast_l','Forecast','#77758b','dot']].map(s=>({{x:months,y:months.map(m=>byMonth[m][s[0]]),name:s[1],mode:'lines',line:{{color:s[2],width:2.5,dash:s[3]}}}}));
+        Plotly.react('skuHistory',traces,{{template:'plotly_white',height:330,margin:{{l:55,r:24,t:78,b:47}},title:{{text:one+' · monthly demand evidence',font:{{family:'Arial',size:16,color:'#211c39'}}}},font:{{family:'Arial',size:12,color:'#211c39'}},legend:{{orientation:'h',y:1.0,yanchor:'top',x:0}},xaxis:{{gridcolor:'#f0edf5'}},yaxis:{{title:'Monthly volume · L',gridcolor:'#f0edf5'}}}},{{responsive:true,displaylogo:false}});
+      }}
+      window.addEventListener('DOMContentLoaded',applySkuFilter);
+    </script>'''
+
+
 def create_exports(data, result, overrides, source_text='', root=None):
     folder=Path(tempfile.mkdtemp(prefix='chain_reaction_',dir=root))
     report_path=folder/'Chain_Reaction_Dashboard.html'
@@ -328,9 +376,9 @@ def create_exports(data, result, overrides, source_text='', root=None):
         z.writestr('SOURCES.md',source_text)
         z.writestr('README.txt','All output values are scenario results or explicitly labeled observations. CSV inputs + scenario.json + human_decisions.csv reproduce this run with engine.py. Network-transfer candidates are outside the simulation. No inventory principal is counted as recurring cost savings. Cost improvement = baseline minus proposed. Service improvement = proposed minus baseline. Percentile bands are scenario ranges, not confidence intervals.\n')
     parts=[f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Chain Reaction | Scenario report</title><style>{CSS}',
-      'main{max-width:1370px;margin:24px auto;padding:0 25px}.report-nav{position:sticky;top:0;background:#f5f5faf5;display:flex;gap:14px;padding:15px 0;z-index:10}.report-nav a{font-size:13px;color:#5c3b95;text-decoration:none;font-weight:700}.report-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.chart{background:white;border-radius:14px;overflow:hidden;border:1px solid #e7e3ef}.report-section{margin-top:25px;scroll-margin-top:60px}.table-wrap{overflow:auto;max-height:470px;background:white;border:1px solid #e3deeb;border-radius:12px}.data-table{border-collapse:collapse;width:100%;font-size:12px;white-space:nowrap}.data-table th{position:sticky;top:0;background:#30254b;color:white;text-align:left;padding:11px}.data-table td{padding:9px 11px;border-bottom:1px solid #eeeaf4}.data-table tr:nth-child(even){background:#f9f7fc}.note{font-size:12px;color:#77758b;line-height:1.7}.sources{font-size:12px;white-space:pre-wrap;line-height:1.6;background:white;padding:22px;border-radius:12px}.print-btn{margin-left:auto;border:0;background:#6d42cb;color:white;border-radius:7px;padding:7px 13px;cursor:pointer}@media print{.report-nav,.print-btn{display:none}.report-section{break-inside:avoid}.table-wrap{max-height:none;overflow:visible}.report-grid{display:block}.hero{print-color-adjust:exact}.chart{break-inside:avoid}body{background:white!important}}@media(max-width:900px){.report-grid{grid-template-columns:1fr}.report-nav{flex-wrap:wrap}}',
+      'main{max-width:1370px;margin:24px auto;padding:0 25px}.report-nav{position:sticky;top:0;background:#f5f5faf5;display:flex;gap:14px;padding:15px 0;z-index:10}.report-nav a{font-size:13px;color:#5c3b95;text-decoration:none;font-weight:700}.report-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.chart{background:white;border-radius:14px;overflow:hidden;border:1px solid #e7e3ef}.report-section{margin-top:25px;scroll-margin-top:60px}.table-wrap{overflow:auto;max-height:470px;background:white;border:1px solid #e3deeb;border-radius:12px}.data-table{border-collapse:collapse;width:100%;font-size:12px;white-space:nowrap}.data-table th{position:sticky;top:0;background:#30254b;color:white;text-align:left;padding:11px}.data-table td{padding:9px 11px;border-bottom:1px solid #eeeaf4}.data-table tr:nth-child(even){background:#f9f7fc}.note{font-size:12px;color:#77758b;line-height:1.7}.sources{font-size:12px;white-space:pre-wrap;line-height:1.6;background:white;padding:22px;border-radius:12px}.print-btn,.sku-actions button{border:0;background:#6d42cb;color:white;border-radius:7px;padding:7px 13px;cursor:pointer}.print-btn{margin-left:auto}.sku-filter{background:#fff;border:1px solid #e3deeb;border-radius:14px;padding:16px 18px;margin:6px 0 20px}.sku-filter summary{cursor:pointer;font-weight:700;color:#30254b}.sku-actions{display:flex;gap:8px;margin:12px 0}.sku-actions input{min-width:280px;border:1px solid #d7d0e2;border-radius:7px;padding:8px 10px}.sku-options{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;max-height:230px;overflow:auto;margin-bottom:14px}.sku-option{display:flex;gap:7px;align-items:flex-start;background:#f8f6fb;border-radius:8px;padding:8px;font-size:12px}.sku-option small{display:block;color:#77758b;margin-top:2px}.sku-option input{margin-top:2px}@media print{.report-nav,.print-btn,.sku-filter{display:none}.report-section{break-inside:avoid}.table-wrap{max-height:none;overflow:visible}.report-grid{display:block}.hero{print-color-adjust:exact}.chart{break-inside:avoid}body{background:white!important}}@media(max-width:900px){.report-grid{grid-template-columns:1fr}.report-nav{flex-wrap:wrap}.sku-options{grid-template-columns:repeat(2,minmax(0,1fr))}}',
       '</style><script>'+get_plotlyjs()+'</script></head><body><main>',hero(),dataset_strip(data,'Scenario report'),
-      '<nav class="report-nav"><a href="#overview">Overview</a><a href="#d1">D1 Classification</a><a href="#d2">D2 Policy</a><a href="#d3">D3 Outcomes</a><a href="#method">Assumptions</a><button class="print-btn" onclick="window.print()">Print / save PDF</button></nav>',
+      '<nav class="report-nav"><a href="#overview">Overview</a><a href="#d1">D1 Classification</a><a href="#d2">D2 Policy</a><a href="#d3">D3 Outcomes</a><a href="#method">Assumptions</a><button class="print-btn" onclick="window.print()">Print / save PDF</button></nav>',sku_filter_html(data),
       '<section id="overview" class="report-section">',overview_cards(result),recommendation(result),
       '<div class="report-grid">',chart_html(inventory_chart(result),'inventory'),chart_html(stage_chart(result),'stage'),'</div></section>',
       '<section id="d1" class="report-section">',title('D1 · Explain the lifecycle decision','Five stages, confidence, observability and a recorded human decision.'),
