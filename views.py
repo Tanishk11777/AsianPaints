@@ -171,7 +171,7 @@ def style(fig, title_text=None, height=330):
                       paper_bgcolor='#ffffff',plot_bgcolor='#ffffff',height=height,
                       margin=dict(l=50,r=24,t=78 if title_text else 30,b=47),
                       title=dict(text=title_text or '',font=dict(size=16,color=INK)),
-                      legend=dict(orientation='h',y=1.1,yanchor='top',x=0,font=dict(size=11)),
+                      legend=dict(orientation='h',y=1.2,yanchor='top',x=0,font=dict(size=11)),
                       hoverlabel=dict(bgcolor=INK,font=dict(color='white')), hovermode='closest')
     fig.update_xaxes(gridcolor='#f0edf5',zeroline=False)
     fig.update_yaxes(gridcolor='#f0edf5',zeroline=False)
