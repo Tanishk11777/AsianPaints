@@ -256,7 +256,7 @@ def policy_chart(result):
     g=p.groupby('stage')[['current_order_up_to_l','proposed_order_up_to_l','effective_order_up_to_l']].sum()
     stages=[s for s in COLORS if s in g.index]+[s for s in g.index if s not in COLORS]
     fig=go.Figure()
-    for col,label,color in [('current_order_up_to_l','Current',MUTED),('proposed_order_up_to_l','Suggested','#b6a3e1'),('effective_order_up_to_l','Approved scenario',TEAL)]:
+    for col,label,color in [('current_order_up_to_l','Current',MUTED),('proposed_order_up_to_l','Suggested','#b6a3e1')]:
         fig.add_trace(go.Bar(x=stages,y=g.reindex(stages)[col],name=label,marker_color=color))
     fig.update_layout(barmode='group')
     fig.update_yaxes(title='Order-up-to target · L')
