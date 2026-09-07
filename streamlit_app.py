@@ -79,7 +79,10 @@ with st.sidebar:
             st.rerun()
         st.download_button('Download sample Excel',template.read_bytes(),file_name=template.name,mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',width='stretch')
     if upload is not None:st.session_state.use_sample=False
-    st.caption('Sample Excel is active.' if st.session_state.use_sample else f'Uploaded file is active: {upload.name}')
+    if st.session_state.use_sample:
+        st.success("✅ Sample data loaded and currently in use: Chain_Reaction_Input.xlsx")
+    else:
+        st.info(f"📄 Uploaded workbook currently in use: {upload.name}")
     mode=st.selectbox('Policies to test',['Current policy only','Decline / exit proposals','All eligible proposals','My SKU decisions'],help='Decline/exit group uses the prior approved stage in the workbook. Review gates still apply.')
     group_reason=st.text_input('Group approval reason',value='MVP scenario test; validate in a controlled pilot',disabled=mode in ['Current policy only','My SKU decisions'])
     horizon=st.slider('Horizon · weeks',4,52,26)
