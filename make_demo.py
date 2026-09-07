@@ -17,15 +17,33 @@ import pandas as pd
 ORIGIN = "SYNTHETIC DEMONSTRATION — not Asian Paints operational data"
 AS_OF = pd.Timestamp("2026-08-31")
 LOCATIONS = ["Mumbai", "Delhi NCR", "Bengaluru", "Kolkata"]
+TRAJECTORIES = ["Full lifecycle", "Extended maturity", "Perpetual niche",
+                "Failed launch", "Fad", "Revival", "Generational replacement"]
+# Every demo SKU has a distinct observed-history length from 3 to 48 months.
+HISTORY_MONTHS = [3, 4, 5, 6, 7, 8, 12, 14, 16, 18, 20, 22,
+                  24, 26, 28, 30, 32, 34, 36, 38, 40, 42,
+                  44, 46, 48, 47, 45, 43, 41, 39, 37, 35,
+                  33, 31, 29, 27]
+TRAJECTORY_REFERENCE = [
+    "Full lifecycle", "Extended maturity", "Perpetual niche", "Failed launch", "Fad", "Full lifecycle",
+    "Full lifecycle", "Fad", "Extended maturity", "Perpetual niche", "Revival", "Full lifecycle",
+    "Extended maturity", "Full lifecycle", "Perpetual niche", "Extended maturity", "Full lifecycle",
+    "Perpetual niche", "Extended maturity", "Full lifecycle", "Extended maturity", "Perpetual niche",
+    "Full lifecycle", "Fad", "Full lifecycle", "Full lifecycle", "Generational replacement",
+    "Fad", "Generational replacement", "Generational replacement", "Fad", "Generational replacement",
+    "Generational replacement", "Extended maturity", "Revival", "Perpetual niche",
+]
 
 
 def _pack(value: float, pack: int, *, minimum: int = 0) -> float:
     return float(max(minimum, round(max(0.0, value) / pack)) * pack)
 
 
-def _curve(index: int, age: int, length: int) -> float:
-    """Private generation recipe. No recipe/true-stage columns are exported."""
+def _curve(index: int, age: int, length: int, trajectory: str) -> float:
+    """Synthetic recipe; trajectory is a reference shape, never a forecast label."""
     if index < 6:
+        if trajectory == "Failed launch":
+            return 0.72 if age < 2 else max(0.16, 0.72 * (0.76 ** (age - 1)))
         return 0.35 + 0.105 * age
     if index < 12:
         return 0.42 * (1.058 ** age)
@@ -46,7 +64,7 @@ def _curve(index: int, age: int, length: int) -> float:
 
 def make_demo(seed: int = 2608) -> dict[str, pd.DataFrame]:
     rng = np.random.default_rng(seed)
-    months = pd.date_range(end=AS_OF, periods=30, freq="MS") + pd.offsets.MonthEnd(0)
+    months = pd.date_range(end=AS_OF.replace(day=1), periods=max(HISTORY_MONTHS), freq="MS") + pd.offsets.MonthEnd(0)
     families = ["Interior emulsion", "Exterior emulsion", "Water-based primer", "Synthetic enamel", "Liquid waterproofing"]
     names = ["Velvet Matt", "Weather Coat", "Wall Base", "Gloss Enamel", "Roof Shield"]
     shades = ["White", "Ivory", "Sandstone", "Mist Grey", "Pale Blue", "Deep Base", "Terracotta", "Sea Green"]
@@ -71,14 +89,16 @@ def make_demo(seed: int = 2608) -> dict[str, pd.DataFrame]:
         lead = [10, 14, 7, 14, 12][fi]
         lead_sd = [2, 4, 2, 3, 3][fi]
         formulation = "Formula II" if idx < 20 else "Formula I"
+        trajectory = TRAJECTORY_REFERENCE[idx]
         products.append(dict(sku=sku, product_name=f"{names[fi]} / {shades[(idx // 4) % 5]} / {pack_l} L / {formulation}",
                              family=families[fi], pack_l=pack_l, unit_cost_inr_l=cost,
                              unit_margin_inr_l=margin, shelf_life_days=shelf,
                              min_customer_life_days=mrsl, moq_l=float(pack_l * 6),
                              lead_time_days=lead, lead_time_sd_days=lead_sd,
                              prior_stage=prior_stage, commercial_status=status,
-                             successor_sku=successor, data_origin=ORIGIN))
-        length = [3, 4, 5, 6, 7, 8][idx] if idx < 6 else 30
+                             successor_sku=successor, trajectory_reference=trajectory,
+                             data_origin=ORIGIN))
+        length = HISTORY_MONTHS[idx]
         item_months = months[-length:]
         base = float(rng.uniform(270, 680))
         if idx == 35:
@@ -94,7 +114,7 @@ def make_demo(seed: int = 2608) -> dict[str, pd.DataFrame]:
                 season = 1.0 + 0.09 * np.sin(2 * np.pi * (month.month - 8) / 12)
                 if fi == 4:
                     season += 0.07 * np.cos(2 * np.pi * (month.month - 5) / 12)
-                expected = local_base * _curve(idx, age, length) * season
+                expected = local_base * _curve(idx, age, length, trajectory) * season
                 order = _pack(expected * rng.lognormal(-0.002, 0.065), pack_l)
                 if idx in (31, 32) and age >= 27:
                     order = float(pack_l if (age + li + idx) % 3 == 0 else 0)
@@ -109,7 +129,7 @@ def make_demo(seed: int = 2608) -> dict[str, pd.DataFrame]:
                 # shortfall from flooring (which distorts low-volume niches).
                 shipped = float(rng.binomial(int(order / pack_l), fill) * pack_l)
                 # Historical forecasts use earlier order observations only.
-                lagged = np.mean(local_orders[-3:]) if local_orders else local_base * _curve(idx, 0, length)
+                lagged = np.mean(local_orders[-3:]) if local_orders else local_base * _curve(idx, 0, length, trajectory)
                 forecast = _pack(lagged * rng.uniform(0.95, 1.05), pack_l)
                 closing = _pack(max(order, forecast) * rng.uniform(0.7, 1.25), pack_l)
                 local_history.append(dict(month=month.date().isoformat(), sku=sku, location=location,
@@ -187,6 +207,10 @@ def make_demo(seed: int = 2608) -> dict[str, pd.DataFrame]:
 def validate_demo(data: dict[str, pd.DataFrame]) -> None:
     p, h, pos, b, c = (data[x] for x in ["Products", "History", "Positions", "Batches", "Commitments"])
     assert len(p) == 36 and len(pos) == 144
+    assert set(p.trajectory_reference) == set(TRAJECTORIES)
+    history_lengths = h.groupby("sku").month.nunique()
+    assert history_lengths.min() == 3 and history_lengths.max() == 48
+    assert history_lengths.nunique() == len(p)
     assert not p.sku.duplicated().any() and not pos.duplicated(["sku", "location"]).any()
     assert not h.duplicated(["month", "sku", "location"]).any()
     assert (h.shipments_l <= h.orders_l).all() and (h.orders_l >= 0).all()
