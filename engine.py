@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 
 STAGES = ["Introduction", "Growth", "Maturity", "Decline", "Exit"]
+TRAJECTORIES = ["Full lifecycle", "Extended maturity", "Perpetual niche",
+                "Failed launch", "Fad", "Revival", "Generational replacement"]
 COMMERCIAL_STATUSES = ["Active", "Phase-out", "Discontinued", "Hold", "Relaunch"]
 SCHEMA = {
     "Products": "sku product_name family pack_l unit_cost_inr_l unit_margin_inr_l shelf_life_days min_customer_life_days moq_l lead_time_days lead_time_sd_days prior_stage commercial_status successor_sku data_origin".split(),
@@ -24,6 +26,7 @@ SCHEMA = {
     "Lanes": "source destination transit_days cost_inr_l capacity_l enabled".split(),
     "Settings": "parameter value explanation".split(),
 }
+OPTIONAL_COLUMNS = {"Products": ["trajectory_reference"]}
 
 
 def default_controls():
@@ -79,7 +82,10 @@ def validate_data(data):
         missing = set(columns) - set(frame.columns)
         if missing:
             raise ValueError(f"{name}: missing columns {', '.join(sorted(missing))}.")
-        frame = frame[columns].dropna(how="all").reset_index(drop=True)
+        for optional in OPTIONAL_COLUMNS.get(name, []):
+            if optional not in frame:
+                frame[optional] = ""
+        frame = frame[columns + OPTIONAL_COLUMNS.get(name, [])].dropna(how="all").reset_index(drop=True)
         if name in {"Products", "History", "Positions", "Settings"} and frame.empty:
             raise ValueError(f"{name} must contain data.")
         out[name] = frame
@@ -136,6 +142,15 @@ def validate_data(data):
     products = out["Products"]
     if not products["prior_stage"].isin(STAGES).all():
         raise ValueError("Products.prior_stage must use Introduction, Growth, Maturity, Decline or Exit.")
+    products["trajectory_reference"] = products["trajectory_reference"].fillna("").astype(str).str.strip()
+    invalid_trajectories = products.loc[
+        products["trajectory_reference"].ne("") & ~products["trajectory_reference"].isin(TRAJECTORIES),
+        "trajectory_reference",
+    ].unique()
+    if len(invalid_trajectories):
+        raise ValueError(
+            "Products.trajectory_reference must be blank or one of: " + ", ".join(TRAJECTORIES) + "."
+        )
     status_map = {status.lower(): status for status in COMMERCIAL_STATUSES}
     products["commercial_status"] = products["commercial_status"].astype(str).str.strip().str.lower().map(status_map)
     if products["commercial_status"].isna().any():
@@ -338,7 +353,9 @@ def _classify(data, c, overrides):
         family_series = data["History"].loc[data["History"].sku.isin(family_skus)].groupby("month").orders_l.sum().sort_index()
         _,family_trend,_,_ = _candidate(family_series.to_numpy(float),c["trend_threshold_pct"],c["min_history_months"])
         relative = trend-family_trend if np.isfinite(trend) and np.isfinite(family_trend) else np.nan
+        trajectory_reference = str(getattr(p, "trajectory_reference", "") or "Unspecified")
         rows.append(dict(sku=p.sku, product_name=p.product_name, family=p.family,
+                         trajectory_reference=trajectory_reference,
                          prior_stage=p.prior_stage, candidate_stage=candidate, stage=stage,
                          confidence=confidence, observability=observable, history_months=len(y),
                          trend_pct=trend, peak_ratio=peak, active_location_pct=100 * active / max(locations, 1),
